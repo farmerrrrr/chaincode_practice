@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"strconv"
 
@@ -16,13 +17,11 @@ type User struct {
 	Amount string `json:"amount"`
 }
 
-const total = "Total"
-
 var userNumber int
 
 func (t *SimpleChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
-	userNumber = 0
-	t.mint(stub, []string{total, "0"})
+	t.mint(stub, []string{"Total", "0"})
+	userNumber = 1
 	return shim.Success(nil)
 }
 
@@ -31,21 +30,19 @@ func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 
 	if function == "mint" {
 		return t.mint(stub, args)
-	} else if function == "balanceOf" {
-		return t.balanceOf(stub, args)
+	} else if function == "balance" {
+		return t.printBalance(stub, args)
 	} else if function == "withdraw" {
-		return t.withdraw(stub, args)
+		return t.withdraw(stub, args, false)
 	} else if function == "transfer" {
 		return t.transfer(stub, args)
 	} else if function == "totalAmount" {
-		return t.totalAmount(stub)
+		return t.printBalance(stub, []string{"Total"})
 	} else if function == "queryAllUsers" {
 		return t.queryAllUsers(stub)
-	} else if function == "deleteUser" {
-		return t.deleteUser(stub, args)
 	}
 
-	return shim.Error("Invalid invoke function name. Expecting \"mint\" \"transfer\" \"totalAmount\" \"balanceOf\" \"withdraw\" \"queryAllUsers\" \"deleteUser\"")
+	return shim.Error("Invalid invoke function name. Expecting \"mint\" \"transfer\" \"totalAmount\" \"balanceOf\" \"withdraw\" \"queryAllUsers\"")
 }
 
 func (t *SimpleChaincode) mint(stub shim.ChaincodeStubInterface, args []string) pb.Response {
@@ -62,10 +59,18 @@ func (t *SimpleChaincode) mint(stub shim.ChaincodeStubInterface, args []string) 
 	if amount < 0 {
 		return shim.Error("Amount can't be negative.")
 	}
+	if balanceOf(stub, []string{user}) != nil {
+		return shim.Error("The user already exists.")
+	}
 
+	// {"USER"+N: user name}, {user name: amount}
+	if err := stub.PutState("USER"+strconv.Itoa(userNumber), []byte(user)); err != nil {
+		return shim.Error(err.Error())
+	}
 	if err := stub.PutState(user, []byte(strconv.Itoa(amount))); err != nil {
 		return shim.Error(err.Error())
 	}
+	userNumber++
 
 	t.addTotalAmount(stub, amount)
 
@@ -74,33 +79,44 @@ func (t *SimpleChaincode) mint(stub shim.ChaincodeStubInterface, args []string) 
 
 func (t *SimpleChaincode) addTotalAmount(stub shim.ChaincodeStubInterface, amount int) pb.Response {
 
-	totalAmountAsBytes := t.balanceOf(stub, []string{total})
+	totalAmountAsBytes := balanceOf(stub, []string{"Total"})
 	totalAmount, _ := strconv.Atoi(string(totalAmountAsBytes))
 	totalAmount += amount
 
-	if err := stub.PutState(total, []byte(strconv.Itoa(totalAmount))); err != nil {
+	if err := stub.PutState("Total", []byte(strconv.Itoa(totalAmount))); err != nil {
 		return shim.Error(err.Error())
 	}
 
-	return nil
+	return shim.Success(nil)
 }
 
-func (t *SimpleChaincode) balanceOf(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-	if len(args) != 1 {
-		return shim.Error("Incorrect number of arguments. Expecting 1")
-	}
-
+func balanceOf(stub shim.ChaincodeStubInterface, args []string) []byte {
 	user := args[0]
 
 	balanceAsBytes, err := stub.GetState(user)
 	if err != nil {
-		return shim.Error(err.Error())
+		return nil
 	}
 
 	return balanceAsBytes
 }
 
-func (t *SimpleChaincode) withdraw(stub shim.ChaincodeStubInterface, args []string) pb.Response {
+func (t *SimpleChaincode) printBalance(stub shim.ChaincodeStubInterface, args []string) pb.Response {
+	if len(args) != 1 {
+		return shim.Error("Incorrect number of arguments. Expecting 1")
+	}
+
+	user := args[0]
+	balance := string(balanceOf(stub, []string{user}))
+
+	var buffer bytes.Buffer
+	buffer.WriteString(user + "'s balance: " + balance)
+	//	fmt.Printf("%s's balance: %d", user, balance)
+
+	return shim.Success(buffer.Bytes())
+}
+
+func (t *SimpleChaincode) withdraw(stub shim.ChaincodeStubInterface, args []string, isTransferred bool) pb.Response {
 	if len(args) != 2 {
 		return shim.Error("Incorrect number of arguments. Expecting 2")
 	}
@@ -112,20 +128,24 @@ func (t *SimpleChaincode) withdraw(stub shim.ChaincodeStubInterface, args []stri
 		return shim.Error("Amount can't be negative.")
 	}
 
-	balanceAsBytes := t.balanceOf(stub, []string{user})
+	balanceAsBytes := balanceOf(stub, []string{user})
 
 	balance, _ := strconv.Atoi(string(balanceAsBytes))
 	balance = balance - amount
 
 	if balance < 0 {
-		return shim.Error("The amount is more than the balance.")
+		return shim.Error("The withdrawal amount is more than the balance.")
 	}
 
 	if err := stub.PutState(user, []byte(strconv.Itoa(balance))); err != nil {
 		return shim.Error(err.Error())
 	}
 
-	return nil
+	if isTransferred == false {
+		t.addTotalAmount(stub, -amount)
+	}
+
+	return shim.Success(nil)
 }
 
 func (t *SimpleChaincode) transfer(stub shim.ChaincodeStubInterface, args []string) pb.Response {
@@ -134,11 +154,11 @@ func (t *SimpleChaincode) transfer(stub shim.ChaincodeStubInterface, args []stri
 	}
 
 	info := []string{args[0], args[2]}
-	t.withdraw(stub, info)
+	t.withdraw(stub, info, true)
 
 	beneficiary := args[1]
 
-	balance, _ := strconv.Atoi(string(t.balanceOf(stub, []string{beneficiary})))
+	balance, _ := strconv.Atoi(string(balanceOf(stub, []string{beneficiary})))
 	amount, _ := strconv.Atoi(args[2])
 	balance = balance + amount
 
@@ -146,36 +166,43 @@ func (t *SimpleChaincode) transfer(stub shim.ChaincodeStubInterface, args []stri
 		return shim.Error(err.Error())
 	}
 
-	return nil
-}
-
-func (t *SimpleChaincode) totalAmount(stub shim.ChaincodeStubInterface) pb.Response {
-	totalAmount, _ := strconv.Atoi(string(t.balanceOf(stub, []string{total})))
-
-	fmt.Println("Total amount: %d\n", totalAmount)
-
-	return nil
+	return shim.Success(nil)
 }
 
 func (t *SimpleChaincode) queryAllUsers(stub shim.ChaincodeStubInterface) pb.Response {
-	return nil
-}
+	startKey := "USER1"
+	endKey := "USER999"
 
-// Deletes an entity from state
-func (t *SimpleChaincode) deleteUser(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-	if len(args) != 1 {
-		return shim.Error("Incorrect number of arguments. Expecting 1")
-	}
-
-	A := args[0]
-
-	// Delete the key from the state in ledger
-	err := stub.DelState(A)
+	resultsIterator, err := stub.GetStateByRange(startKey, endKey)
 	if err != nil {
-		return shim.Error("Failed to delete state")
+		return shim.Error(err.Error())
 	}
+	defer resultsIterator.Close()
 
-	return shim.Success(nil)
+	var buffer bytes.Buffer
+
+	buffer.WriteString("{\"User\": ")
+	bArrayMemberAlreadyWritten := false
+	for resultsIterator.HasNext() {
+		queryResponse, err := resultsIterator.Next()
+		if err != nil {
+			return shim.Error(err.Error())
+		}
+		// Add a comma before array members, suppress it for the first array member
+		if bArrayMemberAlreadyWritten == true {
+			buffer.WriteString(", ")
+		}
+		buffer.WriteString("\"")
+		buffer.WriteString(string(queryResponse.Value))
+		buffer.WriteString("\"")
+
+		bArrayMemberAlreadyWritten = true
+	}
+	buffer.WriteString("}")
+
+	fmt.Printf("- queryAllUser:\n%s\n", buffer.String())
+
+	return shim.Success(buffer.Bytes())
 }
 
 func main() {
