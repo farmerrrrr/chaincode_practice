@@ -17,7 +17,7 @@ type User struct {
 	Amount string `json:"amount"`
 }
 
-var userNumber int
+var userNumber int = 0
 
 func (t *SimpleChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
 	t.mint(stub, []string{"Total", "0"})
@@ -53,7 +53,7 @@ func (t *SimpleChaincode) mint(stub shim.ChaincodeStubInterface, args []string) 
 	user := args[0]
 	amount, _ := strconv.Atoi(args[1])
 
-	if user == "Total" {
+	if user == "Total" && userNumber > 0 {
 		return shim.Error("Invalid user name.")
 	}
 	if amount < 0 {
@@ -110,7 +110,12 @@ func (t *SimpleChaincode) printBalance(stub shim.ChaincodeStubInterface, args []
 	balance := string(balanceOf(stub, []string{user}))
 
 	var buffer bytes.Buffer
-	buffer.WriteString(user + "'s balance: " + balance)
+	if user == "Total" {
+		buffer.WriteString(user + " amount: " + balance)
+	} else {
+		buffer.WriteString(user + "'s balance: " + balance)
+	}
+
 	//	fmt.Printf("%s's balance: %d", user, balance)
 
 	return shim.Success(buffer.Bytes())
@@ -200,7 +205,7 @@ func (t *SimpleChaincode) queryAllUsers(stub shim.ChaincodeStubInterface) pb.Res
 	}
 	buffer.WriteString("}")
 
-	fmt.Printf("- queryAllUser:\n%s\n", buffer.String())
+	//	fmt.Printf("- queryAllUsers:\n%s\n", buffer.String())
 
 	return shim.Success(buffer.Bytes())
 }
